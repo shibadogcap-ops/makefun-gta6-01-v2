@@ -1,79 +1,273 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// Deterministic screenshot staging for Palm Bay Heat. Each scene mutates the freshly built
+// world handed over by main.js into a fixed, repeatable frame and reports which screen to draw
+// over it. All randomness already happened in the seeded spawners; staging itself never rolls
+// a die, so a given seed always produces the same picture.
+import { COLORS } from './config.js';
+import { createCar } from './vehicles.js';
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
+/** Heat thresholds for one through five wanted stars (mirrors police.js). */
+const HEAT_STARS = [10, 35, 75, 140, 230];
+
+function clamp01(v) {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+/** Set heat and the derived wanted tier together so the HUD stars match the scene. */
+function setHeat(police, heat) {
+  if (!police) return;
+  police.heat = Math.max(0, heat);
+  let wanted = 0;
+  for (let i = 0; i < HEAT_STARS.length; i += 1) {
+    if (police.heat >= HEAT_STARS[i]) wanted = i + 1;
+  }
+  police.wanted = wanted;
+  police.busted = 0;
+  police.seenT = 0;
+}
+
+/** Drop any pursuit cars left from an earlier stage, then zero the police state. */
+function clearPolice(world) {
+  const police = world.police;
+  if (police && Array.isArray(police.cars)) {
+    police.cars.length = 0;
+  }
+  const traffic = world.traffic;
+  if (Array.isArray(traffic)) {
+    for (let i = traffic.length - 1; i >= 0; i -= 1) {
+      const car = traffic[i];
+      if (car && (car.police || car.driver === 'police')) traffic.splice(i, 1);
+    }
+  }
+  setHeat(police, 0);
+}
+
+/** A new cruiser, registered with both the pursuit list and the traffic list main renders from. */
+function addPolice(world, x, y, angle, speed) {
+  const car = createCar(x, y, angle, COLORS.policeBody, {
+    driver: 'police',
+    police: true,
+    axis: 'v',
+    dir: Math.sin(angle) >= 0 ? 1 : -1,
+  });
+  car.speed = speed;
+  car.health = 100;
+  car.cool = 0;
+  car.turnCool = 0;
+  if (world.police && Array.isArray(world.police.cars)) world.police.cars.push(car);
+  if (Array.isArray(world.traffic)) world.traffic.push(car);
+  return car;
+}
+
+/** Put a car at an exact world pose with an exact speed. */
+function placeCar(car, x, y, angle, speed) {
+  if (!car) return;
+  car.x = x;
+  car.y = y;
+  car.angle = angle;
+  car.speed = speed;
+  car.health = 100;
+  car.cool = 0;
+}
+
+/** Seat the player inside a car (the on-foot figure is hidden while driving). */
+function putPlayerInCar(player, car) {
+  if (!player || !car) return;
+  car.driver = 'player';
+  player.car = car;
+  player.x = car.x;
+  player.y = car.y;
+  player.angle = car.angle;
+}
+
+/** Return the player to their own two feet beside the diner. */
+function putPlayerOnFoot(player, x, y, angle, health) {
+  if (!player) return;
+  if (player.car) {
+    const car = player.car;
+    car.driver = car.police ? 'police' : 'parked';
+    car.speed = 0;
+    player.car = null;
+  }
+  player.x = x;
+  player.y = y;
+  player.angle = angle;
+  player.health = health;
+  player.cool = 0;
+}
+
+/** First parked car matching a predicate, falling back to any parked car. */
+function pickParked(world, color) {
+  const pool = (world.parked && world.parked.length) ? world.parked : (world.traffic || []);
+  if (color != null) {
+    for (const car of pool) {
+      if (car && car.color === color && car.driver !== 'player') return car;
+    }
+  }
+  for (const car of pool) {
+    if (car && car.driver !== 'player' && !car.police) return car;
+  }
+  return pool[0] || null;
+}
+
+/** Headline car for the cover: recolour a parked car to the hero coral if none already is. */
+function heroCar(world) {
+  let car = pickParked(world, COLORS.CAR_COLORS[0]);
+  if (!car) return null;
+  if (car.color !== COLORS.CAR_COLORS[0]) car.color = COLORS.CAR_COLORS[0];
+  return car;
+}
+
+/** Reuse spawned traffic cars for the vehicles driving ahead of the chase. */
+function pickTraffic(world, count) {
+  const pool = Array.isArray(world.traffic)
+    ? world.traffic.filter((car) => car && !car.police && car.driver !== 'player')
+    : [];
+  return pool.slice(0, count);
+}
+
 /**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
+ * The diner pad normally already holds three parked cars. If the nearest one ended up far away,
+ * slide the closest car onto the pad so the on-foot frame always has company in view.
  */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
-
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
+function ensureDinerCars(world, x, y) {
+  const parked = Array.isArray(world.parked) ? world.parked : [];
+  let nearest = Infinity;
+  let closest = null;
+  for (const car of parked) {
+    if (!car) continue;
+    const d = Math.hypot(car.x - x, car.y - y);
+    if (d < nearest) {
+      nearest = d;
+      closest = car;
     }
   }
-  return Infinity;
+  if (nearest > 200 && closest) {
+    placeCar(closest, 4246, 1180, 0, 0);
+  }
 }
 
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
+/** Reposition a few of the already-spawned pedestrians near a set of fixed points. */
+function placePeds(world, points) {
+  const peds = Array.isArray(world.peds) ? world.peds : [];
+  for (let i = 0; i < points.length; i += 1) {
+    const ped = peds[i];
+    const p = points[i];
+    if (!ped || !p) continue;
+    ped.x = p.x;
+    ped.y = p.y;
+    ped.angle = p.angle || 0;
+    ped.state = 'walk';
+    ped.fleeT = 0;
+    ped.health = 60;
+    ped.tx = p.x + Math.cos(ped.angle) * 70;
+    ped.ty = p.y + Math.sin(ped.angle) * 70;
   }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
+}
+
+/** Put a display-only mission marker on the map. */
+function objective(world, title, x, y) {
+  if (world.missions && typeof world.missions.active === 'object') {
+    // forceObjective replaces the active job wholesale; mirror it here without importing it.
+    world.missions.active = {
+      kind: 'show',
+      title,
+      stage: 'show',
+      target: { x, y },
+      pay: 0,
+      timer: null,
+      text: title,
+    };
   }
-  return best;
+}
+
+/** Cover frame: a coral getaway car with three cruisers in pursuit up the coast road. */
+function stageChase(world) {
+  clearPolice(world);
+
+  const player = world.player;
+  const car = heroCar(world);
+  placeCar(car, 4227, 1750, -Math.PI / 2, 235);
+  putPlayerInCar(player, car);
+  player.health = 82;
+
+  addPolice(world, 4227, 1905, -Math.PI / 2, 220);
+  addPolice(world, 4253, 1990, -Math.PI / 2, 220);
+  addPolice(world, 4227, 2075, -Math.PI / 2, 220);
+  setHeat(world.police, 100); // wanted 3
+
+  const ahead = pickTraffic(world, 2);
+  const spots = [
+    { x: 4227, y: 1300 },
+    { x: 4253, y: 1050 },
+  ];
+  for (let i = 0; i < ahead.length; i += 1) {
+    const t = ahead[i];
+    placeCar(t, spots[i].x, spots[i].y, -Math.PI / 2, 120 + i * 15);
+    t.driver = 'traffic';
+    t.axis = 'v';
+    t.dir = -1;
+    t.roadX = 4240;
+    t.turnCool = 0;
+  }
+
+  objective(world, 'First Delivery', world.city.marina.x, world.city.marina.y);
+  return { screen: 'game', endKind: null };
+}
+
+/** Quiet frame: the player on the diner pad beside the parked cars, no heat, a few locals. */
+function stageOnFoot(world) {
+  clearPolice(world);
+
+  putPlayerOnFoot(world.player, 4196, 1212, 0, 100);
+  ensureDinerCars(world, 4196, 1212);
+  placePeds(world, [
+    { x: 4040, y: 1120, angle: 0.2 },
+    { x: 4080, y: 1260, angle: -1.1 },
+    { x: 4160, y: 1090, angle: 0.9 },
+  ]);
+  setHeat(world.police, 0);
+  return { screen: 'game', endKind: null };
+}
+
+/** Mission frame: a teal car running south toward the marina with a single cruiser behind. */
+function stageMission(world) {
+  clearPolice(world);
+
+  const player = world.player;
+  const car = pickParked(world);
+  if (car) car.color = COLORS.CAR_COLORS[1]; // teal
+  placeCar(car, 4253, 2050, Math.PI / 2, 190);
+  putPlayerInCar(player, car);
+  player.health = 100;
+
+  addPolice(world, 4253, 2240, Math.PI / 2, 170);
+  setHeat(world.police, 20); // wanted 1
+
+  placePeds(world, [
+    { x: 4340, y: 2000, angle: Math.PI / 2 },
+    { x: 4380, y: 2100, angle: -Math.PI / 2 },
+  ]);
+
+  objective(world, 'First Delivery', world.city.marina.x, world.city.marina.y);
+  return { screen: 'game', endKind: null };
+}
+
+/** Title frame: the same quiet diner corner, but a fully ambient world and no objective. */
+function stageTitle(world) {
+  clearPolice(world);
+  putPlayerOnFoot(world.player, 4196, 1212, 0, 100);
+  ensureDinerCars(world, 4196, 1212);
+  return { screen: 'title', endKind: null };
 }
 
 /**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
+ * Mutate `world` into the named scene and report the screen to paint (unknown names default to
+ * the ambient title backdrop).
  */
 export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
-  }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
-  }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+  if (!world) return { screen: 'title', endKind: null };
+  if (name === 'chase') return stageChase(world);
+  if (name === 'onfoot') return stageOnFoot(world);
+  if (name === 'mission') return stageMission(world);
+  return stageTitle(world);
 }
