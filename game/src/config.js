@@ -1,61 +1,107 @@
-// Every tuning number and colour in one place. The playfield is a fixed 1280x720 logical area;
-// the renderer scales it to the window, so no rule below depends on the screen size.
+// Shared constants for Palm Bay Heat. Everything here is import-only: no side effects,
+// no dependencies, and one source of truth for the world size, palette and tuning.
 
-export const FIELD = { width: 1280, height: 720, groundY: 664 };
+/** World dimensions in pixels (x right, y down). */
+export const WORLD = { W: 4800, H: 3200 };
 
-/** The simulation's fixed step, in seconds: 60 updates a second whatever the display's rate. */
-export const STEP = 1 / 60;
+/** Logical viewport size; the canvas element uses these dimensions. */
+export const VIEW = { W: 1280, H: 720 };
 
-export const PLAYER = {
-  width: 72,
-  height: 24,
-  speed: 560,
-  invulnerable: 1.5,
+/** Sunset palette: golden light, coral/teal/cream cars, deep blue water, pastel buildings. */
+export const COLORS = {
+  groundGrass: '#879a63',
+  groundDowntown: '#6d5b66',
+  groundSuburb: '#71805a',
+
+  sand: '#e7c783',
+  water: '#2c6f9c',
+  waterDeep: '#17476e',
+
+  asphalt: '#3a3941',
+  asphaltEdge: '#292830',
+  sidewalk: '#cdbda6',
+  roadLine: '#f1dcac',
+  crosswalk: '#efe7d2',
+
+  buildingShadow: 'rgba(48, 26, 30, 0.30)',
+  wallBand: 'rgba(30, 16, 20, 0.18)',
+  windowLit: '#ffd98a',
+  windowDark: '#4a4b5e',
+
+  BUILDING_COLORS: [
+    '#e6a696',
+    '#a8c7b5',
+    '#e7cf9e',
+    '#b6a7d8',
+    '#e2b3c6',
+    '#9fc9d6',
+    '#d8b79a',
+    '#c3d18f',
+    '#d99a8c',
+    '#aeb9d8',
+  ],
+
+  palmTrunk: '#7a5230',
+  palmLeaf: '#4f7a4a',
+  palmLeafDark: '#355736',
+  dinerRoof: '#d96b5c',
+  pier: '#8a6b4a',
+
+  // The first entry is the hero coral used for the player's car in staged scenes.
+  CAR_COLORS: [
+    '#ef6b5a',
+    '#3fb8af',
+    '#f0e2c0',
+    '#e8664f',
+    '#e8b23a',
+    '#5aa9d6',
+    '#8ecfa8',
+    '#e58fb0',
+    '#a99bd6',
+    '#4a4f5c',
+  ],
+
+  PED_COLORS: [
+    '#e05a5a',
+    '#4aa3b8',
+    '#f0c04a',
+    '#7bbf6a',
+    '#d98cc0',
+    '#6c78c4',
+    '#e8a45c',
+    '#9ad1d8',
+  ],
+
+  playerShirt: '#e8543f',
+  playerSkin: '#e0ad82',
+
+  policeBody: '#e8e9ec',
+  policeTrim: '#22304a',
+  lightRed: '#ff3b46',
+  lightBlue: '#3b8cff',
+
+  bullet: '#fff3c4',
+
+  uiPanel: 'rgba(20, 12, 14, 0.82)',
+  uiPanelEdge: 'rgba(240, 200, 130, 0.35)',
+  uiText: '#f7ecd7',
+  uiDim: '#b9a48c',
+  accent: '#f2b544',
+  danger: '#e25046',
+  good: '#5fbf8a',
 };
 
-export const LIVES = 3;
-
-export const BLOCK = {
-  minWidth: 40,
-  maxWidth: 110,
-  height: 36,
-  speed: 240,
-  speedPerLevel: 30,
-  speedJitter: 90,
-  interval: 0.55,
-  intervalScale: 0.88,
-  minInterval: 0.14,
-  dodgePoints: 1,
+/** Gameplay tuning numbers. Speeds are px/s, angles radians. */
+export const TUNE = {
+  playerSpeed: 175,
+  playerSprint: 268,
+  pedSpeed: 55,
+  carAccel: 265,
+  carMaxSpeed: 345,
+  carMaxReverse: 120,
+  carTurn: 2.6,
+  bulletSpeed: 950,
+  bulletLife: 0.55,
+  shootCooldown: 0.22,
+  worldSeed: 20261119,
 };
-
-export const COIN = {
-  size: 24,
-  speed: 190,
-  speedPerLevel: 14,
-  interval: 1.4,
-  intervalJitter: 0.8,
-  points: 10,
-};
-
-/** Seconds of play per level, and the last level: speeds and spawn rates stop growing there. */
-export const LEVEL = { seconds: 12, max: 12 };
-
-/** How many falling things can exist at once; the pool is allocated once, at boot. */
-export const POOL_SIZE = 64;
-
-export const PALETTE = {
-  backdrop: '#11141b',
-  sky: '#1b1f2a',
-  ground: '#2a3040',
-  player: '#4fc3f7',
-  block: '#e5534b',
-  coin: '#f2c94c',
-  panel: '#252b38',
-  text: '#eef1f5',
-  muted: '#8b93a3',
-};
-
-export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
-
-/** Where the best score is kept between visits (this browser only). */
-export const BEST_KEY = 'block-dodger.best';
